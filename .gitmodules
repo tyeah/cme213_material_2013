@@ -1,0 +1,3 @@
+[submodule "CME213-LectureExamples"]
+	path = CME213-LectureExamples
+	url = https://github.com/ekelsen/CME213-LectureExamples
