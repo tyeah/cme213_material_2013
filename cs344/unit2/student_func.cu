@@ -1,5 +1,6 @@
 #include "reference_calc.cpp"
 #include "utils.h"
+#include <stdio.h>
 
 __global__
 void gaussian_blur(const unsigned char* const inputChannel,
@@ -28,8 +29,13 @@ void gaussian_blur(const unsigned char* const inputChannel,
   // the value is out of bounds), you should explicitly clamp the neighbor values you read
   // to be within the bounds of the image. If this is not clear to you, then please refer
   // to sequential reference solution for the exact clamping semantics you should follow.
-  int r = blockIdx.x * blockDim.x + threadIdx.x;
-  int c = blockIdx.y * blockDim.y + threadIdx.y;
+  int c = blockIdx.x * blockDim.x + threadIdx.x;
+  int r = blockIdx.y * blockDim.y + threadIdx.y;
+  if ( c >= numCols ||
+       r >= numRows )
+  {
+      return;
+  }
   
   float result = 0.f;
   //For every value in the filter around the pixel (c, r)
@@ -46,14 +52,14 @@ void gaussian_blur(const unsigned char* const inputChannel,
       result += image_value * filter_value;
     }
   }
-  outputChannel[r * numCols + c] = result;
+  outputChannel[r * numCols + c] = (char)result;
 
 }
 
 //This kernel takes in an image represented as a uchar4 and splits
 //it into three images consisting of only one color channel each
 __global__
-void separateChannels(const uchar4* const inputI ageRGBA,
+void separateChannels(const uchar4* const inputImageRGBA,
                       int numRows,
                       int numCols,
                       unsigned char* const redChannel,
@@ -78,8 +84,8 @@ void separateChannels(const uchar4* const inputI ageRGBA,
   {
       return;
   }
-  int position_flatten = absolute_image_position_x * numCols + absolute_image_position_y;
-  uchar4 rgba = inputImageRGBA[p siti n_flatten];
+  int position_flatten = absolute_image_position_y * numCols + absolute_image_position_x;
+  uchar4 rgba = inputImageRGBA[position_flatten];
   redChannel[position_flatten] = rgba.x;
   greenChannel[position_flatten] = rgba.y;
   blueChannel[position_flatten] = rgba.z;
@@ -164,11 +170,18 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
                         unsigned char *d_blueBlurred,
                         const int filterWidth)
 {
+  /*
   int max_devisor = 20;
   int blockDimX = find_devisor(numRows, max_devisor);
   int blockDimY = find_devisor(numCols, max_devisor);
   int gridDimX = numRows / blockDimX;
   int gridDimY = numCols / blockDimY;
+  */
+  int blockDimX = 16;
+  int blockDimY = 16;
+  int gridDimX = numCols / blockDimX + int(numCols % blockDimX > 0);
+  int gridDimY = numRows / blockDimY + int(numRows % blockDimY > 0);
+  printf("%d\t%d,\t%d\t%d,\t%d\t%d\n", numRows, numCols, blockDimX, blockDimY, gridDimX, gridDimY);
 
   //TODO: Set reasonable block size (i.e., number of threads per block)
   const dim3 blockSize(blockDimX, blockDimY, 1);
@@ -197,16 +210,18 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
   gaussian_blur<<<gridSize, blockSize>>>(d_red,
                                          d_redBlurred,
                                          numRows, numCols,
-                                         filter, filterWidth)
+                                         d_filter, filterWidth);
   gaussian_blur<<<gridSize, blockSize>>>(d_green,
-                                         d_green,
+                                         d_greenBlurred,
                                          numRows, numCols,
-                                         filter, filterWidth)
+                                         d_filter, filterWidth);
   gaussian_blur<<<gridSize, blockSize>>>(d_blue,
-                                         d_blue,
+                                         d_blueBlurred,
                                          numRows, numCols,
-                                         filter, filterWidth)
+                                         d_filter, filterWidth);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+  int pick = 173400;
+  //printf("%d\t%d,\t%d\t%d,\t%d\t%d\n", d_red[pick], d_redBlurred[pick], d_green[pick], d_greenBlurred[pick], d_blue[pick], d_blueBlurred[pick]);
 
   // Now we recombine your results. We take care of launching this kernel for you.
   //
