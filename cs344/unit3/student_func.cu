@@ -82,6 +82,89 @@
 
 #include "reference_calc.cpp"
 #include "utils.h"
+#include <stdio.h>
+
+/*
+__global__
+void reduce_in_block((float *)op(float, float), const float* const arr, int n, float* result) {
+  // perform reduce in on block in place
+  // use 1d block and grid
+  // n is length of idx
+  extern __shared__ float arr_shared[];
+  int idx = threadIdx.x;
+  int minIdx = blockIdx.x * blockDim.x;
+  int maxIdx = minIdx + blockDim.x; // exclusive
+  int idxDiff = maxIdx - minIdx
+  if (maxIdx < n) {
+    maxIdx = n;
+  }
+  int idxInArr = minIdx + idx;
+  if (idxInArr > n) {
+    return;
+  }
+  arr_shared[idx] = arr[idxInArr];
+  __syncthreads();
+
+  int pairIdx;
+  float pairValue;
+  for (int inc = 1; inc < idxDiff; inc *= 2) {
+    if (idx % (inc * 2) == 0) {
+      pairIdx = idx + inc;
+      if (pairIdx < idxDiff) {
+        arr[idx] = op(arr_shared[idx], arr_shared[pairIdx]);
+      }
+    }
+  }
+  result[blockIdx.x] = arr_shared[0]
+}
+
+void reduce((float *)op(float, float), const float* const arr, int n, int blockDimX) {
+  float* result;
+  int gridDimX = n / blockDimX + int(n % blockDimX > 0);
+  checkCudaErrors(cudaMalloc(&result, sizeof(float) * gridDimX));
+  reduce_in_block<<<gridDimX, blockDimX, blockDimX * sizeof(float)>>>(op, arr, n, result);
+}
+*/
+void reduce((float *)op(float, float), const float* const arr, int n, float* result) {
+  // perform reduce in on block in place
+  // use 1d block and grid
+  // n is length of idx
+  // result is the array to operate on
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= n) {
+    return;
+  }
+  result[idx] = arr[idx];
+  __syncthreads();
+
+  int pairIdx;
+  float pairValue;
+  for (int inc = 1; inc < n; inc *= 2) {
+    if (idx % (inc * 2) == 0) {
+      pairIdx = idx + inc;
+      if (pairIdx >= n) {
+        return;
+      }
+      result[idx] = op(result[idx], result[pairIdx]);
+    }
+  }
+}
+
+__global__
+void scan() {
+}
+
+__global__
+void histogram() {
+}
+
+float max(float x, float y) {
+  return x > y ? x : y;
+}
+
+float min(float x, float y) {
+  return x < y ? x : y;
+}
 
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
@@ -101,4 +184,14 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     4) Perform an exclusive scan (prefix sum) on the histogram to get
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
+  int gridSize = numRows, blockSize = numCols;
+  int n = numCols * numRows;
+  float* result;
+  checkCudaErrors(cudaMalloc(result, sizeof(float) * n));
+  reduce<<<gridSize, blockSize>>>(max, d_logLuminance, n, result);
+  max_logLum = result[0];
+  reduce<<<gridSize, blockSize>>>(min, d_logLuminance, n, result);
+  min_logLum = result[0];
+  printf("%d\t%d\n", max_logLum, min_logLum);
+  checkCudaErrors(cudaFree(result));
 }
