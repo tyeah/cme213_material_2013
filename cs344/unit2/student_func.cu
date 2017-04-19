@@ -39,6 +39,7 @@ void gaussian_blur(const unsigned char* const inputChannel,
 
   float result = 0.f;
 
+  /*
   // use shared memory for filter
   extern __shared__ float filterShared[];
   if (threadIdx.x < filterWidth && threadIdx.y < filterWidth) {
@@ -49,10 +50,10 @@ void gaussian_blur(const unsigned char* const inputChannel,
   }
   __syncthreads();
   float* filter0 = filterShared;
-  /*
-  const float* filter0 = &(*filter);
   */
+  const float* filter0 = &(*filter);
 
+  /*
   // use global memory for filter
   //For every value in the filter around the pixel (c, r)
   for (int filter_r = -filterWidth/2; filter_r <= filterWidth/2; ++filter_r) {
@@ -69,8 +70,8 @@ void gaussian_blur(const unsigned char* const inputChannel,
     }
   }
   outputChannel[r * numCols + c] = (char)result;
+  */
 
-  /*
   // use shared memory for image
   int numRows1 = blockDim.y + filterWidth - 1, numCols1 = blockDim.x + filterWidth - 1;
   extern __shared__ unsigned char inputChannelShared[];
@@ -78,14 +79,14 @@ void gaussian_blur(const unsigned char* const inputChannel,
   int c1 = threadIdx.x + filterWidthHalf, r1 = threadIdx.y + filterWidthHalf;
   inputChannelShared[r1 * numCols1 + c1] = inputChannel[r * numCols + c];
   int cShift = 0, rShift = 0;
-  if (c1 - filterWidthHalf < 0) {
+  if (threadIdx.x - filterWidthHalf < 0) {
     cShift = -1;
-  } else if (c1 + filterWidthHalf >= threadIdx.x) {
+  } else if (threadIdx.x + filterWidthHalf >= blockDim.x) {
     cShift = 1;
   }
-  if (r1 - filterWidthHalf < 0) {
+  if (threadIdx.y - filterWidthHalf < 0) {
     rShift = -1;
-  } else if (r1 + filterWidthHalf >= threadIdx.y) {
+  } else if (threadIdx.y + filterWidthHalf >= blockDim.y) {
     rShift = 1;
   }
   int rShifted = min(max(r + rShift * filterWidthHalf, 0), numRows - 1);
@@ -115,7 +116,6 @@ void gaussian_blur(const unsigned char* const inputChannel,
     }
   }
   outputChannel[r * numCols + c] = (char)result;
-  */
 
 
 }
@@ -271,11 +271,11 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
 
   // Again, call cudaDeviceSynchronize(), then call checkCudaErrors() immediately after
   // launching your kernel to make sure that you didn't make any mistakes.
-  int sharedMemSize = sizeof(float) * filterWidth * filterWidth;
   /*
+  int sharedMemSize = sizeof(float) * filterWidth * filterWidth;
+  */
   int numRows1 = blockDimY + filterWidth - 1, numCols1 = blockDimX + filterWidth - 1;
   int sharedMemSize = numRows1 * numCols1;
-  */
   gaussian_blur<<<gridSize, blockSize, sharedMemSize>>>(d_red,
                                          d_redBlurred,
                                          numRows, numCols,
