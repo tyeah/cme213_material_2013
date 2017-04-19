@@ -83,49 +83,20 @@
 #include "reference_calc.cpp"
 #include "utils.h"
 #include <stdio.h>
+#include <stdlib.h>
 
-/*
+typedef float(*pointFunction_t)(float, float);
+inline int h_ceil(int n, int k) {
+  return (n / k + (n % k > 0));
+}
+
+__device__
+inline int d_ceil(int n, int k) {
+  return (n / k + (n % k > 0));
+}
+
 __global__
-void reduce_in_block((float *)op(float, float), const float* const arr, int n, float* result) {
-  // perform reduce in on block in place
-  // use 1d block and grid
-  // n is length of idx
-  extern __shared__ float arr_shared[];
-  int idx = threadIdx.x;
-  int minIdx = blockIdx.x * blockDim.x;
-  int maxIdx = minIdx + blockDim.x; // exclusive
-  int idxDiff = maxIdx - minIdx
-  if (maxIdx < n) {
-    maxIdx = n;
-  }
-  int idxInArr = minIdx + idx;
-  if (idxInArr > n) {
-    return;
-  }
-  arr_shared[idx] = arr[idxInArr];
-  __syncthreads();
-
-  int pairIdx;
-  float pairValue;
-  for (int inc = 1; inc < idxDiff; inc *= 2) {
-    if (idx % (inc * 2) == 0) {
-      pairIdx = idx + inc;
-      if (pairIdx < idxDiff) {
-        arr[idx] = op(arr_shared[idx], arr_shared[pairIdx]);
-      }
-    }
-  }
-  result[blockIdx.x] = arr_shared[0]
-}
-
-void reduce((float *)op(float, float), const float* const arr, int n, int blockDimX) {
-  float* result;
-  int gridDimX = n / blockDimX + int(n % blockDimX > 0);
-  checkCudaErrors(cudaMalloc(&result, sizeof(float) * gridDimX));
-  reduce_in_block<<<gridDimX, blockDimX, blockDimX * sizeof(float)>>>(op, arr, n, result);
-}
-*/
-void reduce((float *)op(float, float), const float* const arr, int n, float* result) {
+void reduce(bool max, const float* const arr, int n, float* result) {
   // perform reduce in on block in place
   // use 1d block and grid
   // n is length of idx
@@ -138,32 +109,86 @@ void reduce((float *)op(float, float), const float* const arr, int n, float* res
   __syncthreads();
 
   int pairIdx;
-  float pairValue;
+  float leftValue, rightValue;
   for (int inc = 1; inc < n; inc *= 2) {
     if (idx % (inc * 2) == 0) {
       pairIdx = idx + inc;
       if (pairIdx >= n) {
         return;
       }
-      result[idx] = op(result[idx], result[pairIdx]);
+      leftValue = result[idx];
+      rightValue = result[pairIdx];
+      if (max) {
+        result[idx] = leftValue > rightValue ? leftValue : rightValue;
+      } else {
+        result[idx] = leftValue < rightValue ? leftValue : rightValue;
+      }
     }
   }
 }
 
 __global__
-void scan() {
+void scan(unsigned int* cdf, int n) {
+  // only compute prefix sum
+  // in place
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= n) {
+    return;
+  }
+  __syncthreads();
+
+  int i, inc = 2, idxLeft;
+  while (1) {
+    // we have idx == idxRight < n
+    i = (idx + 1) / inc;
+    if (i * inc - 1 != idx) {
+      continue;
+    }
+    idxLeft = i * inc - 1 - inc / 2;
+    if (idxLeft < 0 || idxLeft >= n || idx < 0 || idx >= n) {
+      continue;
+    }
+    cdf[idx] += cdf[idxLeft];
+    if (d_ceil(n, inc) == 1) {
+      break;
+    }
+    inc *= 2;
+  }
+  __syncthreads();
+
+  inc /= 2;
+  while (1) {
+    // we have idx == idxRight < n
+    i = int((idx + 1) * 1.0 / inc - 0.5);
+    if (i * inc + inc / 2 - 1 != idx) {
+      continue;
+    }
+    idxLeft = i * inc - 1;
+    if (idxLeft < 0 || idxLeft >= n || idx < 0 || idx >= n) {
+      continue;
+    }
+    cdf[idx] += cdf[idxLeft];
+    if (inc == 2) {
+      break;
+    }
+    inc /= 2;
+  }
+}
+
+void h_scan(unsigned int* cdf, int n) {
+  for (int i = 1; i < n; i++) {
+    cdf[i] += cdf[i - 1];
+  }
 }
 
 __global__
-void histogram() {
-}
-
-float max(float x, float y) {
-  return x > y ? x : y;
-}
-
-float min(float x, float y) {
-  return x < y ? x : y;
+void histogram(const float* const arr, unsigned int* bins, int n, int numBins, float a, float b) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= n) {
+    return;
+  }
+  int binIdx = int((arr[idx] - a) / ((b - a) / numBins));
+  atomicAdd(&bins[binIdx], 1);
 }
 
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
@@ -184,14 +209,32 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     4) Perform an exclusive scan (prefix sum) on the histogram to get
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
-  int gridSize = numRows, blockSize = numCols;
+  int gridSize, blockSize;
   int n = numCols * numRows;
-  float* result;
-  checkCudaErrors(cudaMalloc(result, sizeof(float) * n));
-  reduce<<<gridSize, blockSize>>>(max, d_logLuminance, n, result);
-  max_logLum = result[0];
-  reduce<<<gridSize, blockSize>>>(min, d_logLuminance, n, result);
-  min_logLum = result[0];
-  printf("%d\t%d\n", max_logLum, min_logLum);
-  checkCudaErrors(cudaFree(result));
+  blockSize = 256;
+  gridSize = h_ceil(n, blockSize);
+  float* d_result;
+  checkCudaErrors(cudaMalloc((void**)&d_result, sizeof(float) * n));
+
+  reduce<<<gridSize, blockSize>>>(1, d_logLuminance, n, d_result);
+  checkCudaErrors(cudaMemcpy(&max_logLum, d_result, sizeof(float), cudaMemcpyDeviceToHost));
+
+  reduce<<<gridSize, blockSize>>>(0, d_logLuminance, n, d_result);
+  checkCudaErrors(cudaMemcpy(&min_logLum, d_result, sizeof(float), cudaMemcpyDeviceToHost));
+
+  // use d_cdf to tempeorarily store histogram
+  histogram<<<gridSize, blockSize>>>(d_logLuminance, d_cdf, n, numBins, min_logLum, max_logLum);
+
+  /*
+  unsigned int* h_cdf = (unsigned int*)malloc(sizeof(unsigned int) * numBins);
+  checkCudaErrors(cudaMemcpy(h_cdf, d_cdf, sizeof(unsigned int) * numBins, cudaMemcpyDeviceToHost));
+  h_scan(h_cdf, numBins);
+  checkCudaErrors(cudaMemcpy(d_cdf, h_cdf, sizeof(unsigned int) * numBins, cudaMemcpyHostToDevice));
+  */
+
+  blockSize = 256;
+  gridSize = h_ceil(numBins, blockSize);
+  printf("%d\t%d\t%d\n", blockSize, gridSize, numBins);
+  scan<<<gridSize, blockSize>>>(d_cdf, numBins);
+  checkCudaErrors(cudaFree(d_result));
 }
