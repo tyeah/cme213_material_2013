@@ -36,8 +36,24 @@ void gaussian_blur(const unsigned char* const inputChannel,
   {
       return;
   }
-  
+
   float result = 0.f;
+
+  // use shared memory for filter
+  extern __shared__ float filterShared[];
+  if (threadIdx.x < filterWidth && threadIdx.y < filterWidth) {
+    // only the upper left corner threads do the value copy
+    // to do this, must have blockDim.x >= filterWidth and blockDim.y >= filterWidth
+    int filterIdx = threadIdx.y * filterWidth + threadIdx.x;
+    filterShared[filterIdx] = filter[filterIdx];
+  }
+  __syncthreads();
+  float* filter0 = filterShared;
+  /*
+  const float* filter0 = &(*filter);
+  */
+
+  // use global memory for filter
   //For every value in the filter around the pixel (c, r)
   for (int filter_r = -filterWidth/2; filter_r <= filterWidth/2; ++filter_r) {
     for (int filter_c = -filterWidth/2; filter_c <= filterWidth/2; ++filter_c) {
@@ -47,12 +63,60 @@ void gaussian_blur(const unsigned char* const inputChannel,
       int image_c = min(max(c + filter_c, 0), numCols - 1);
 
       float image_value = (float)inputChannel[image_r * numCols + image_c];
-      float filter_value = filter[(filter_r + filterWidth/2) * filterWidth + filter_c + filterWidth/2];
+      float filter_value = filter0[(filter_r + filterWidth/2) * filterWidth + filter_c + filterWidth/2];
 
       result += image_value * filter_value;
     }
   }
   outputChannel[r * numCols + c] = (char)result;
+
+  /*
+  // use shared memory for image
+  int numRows1 = blockDim.y + filterWidth - 1, numCols1 = blockDim.x + filterWidth - 1;
+  extern __shared__ unsigned char inputChannelShared[];
+  int filterWidthHalf = filterWidth/2; // actually (filterWidth - 1) / 2 since filterWidth % 2 == 1
+  int c1 = threadIdx.x + filterWidthHalf, r1 = threadIdx.y + filterWidthHalf;
+  inputChannelShared[r1 * numCols1 + c1] = inputChannel[r * numCols + c];
+  int cShift = 0, rShift = 0;
+  if (c1 - filterWidthHalf < 0) {
+    cShift = -1;
+  } else if (c1 + filterWidthHalf >= threadIdx.x) {
+    cShift = 1;
+  }
+  if (r1 - filterWidthHalf < 0) {
+    rShift = -1;
+  } else if (r1 + filterWidthHalf >= threadIdx.y) {
+    rShift = 1;
+  }
+  int rShifted = min(max(r + rShift * filterWidthHalf, 0), numRows - 1);
+  int cShifted = min(max(c + cShift * filterWidthHalf, 0), numCols - 1);
+  if (cShift != 0) {
+    inputChannelShared[r1 * numCols1 + c1 + cShift * filterWidthHalf] = inputChannel[r * numCols + cShifted];
+  }
+  if (rShift != 0) {
+    inputChannelShared[(r1 + rShift * filterWidthHalf) * numCols1 + c1] = inputChannel[rShifted * numCols + c];
+  }
+  if (cShift != 0 && rShift != 0) {
+    inputChannelShared[(r1 + rShift * filterWidthHalf) * numCols1 + c1 + cShift * filterWidthHalf] = inputChannel[rShifted * numCols + cShifted];
+  }
+  __syncthreads();
+  //For every value in the filter around the pixel (c, r)
+  for (int filter_r = -filterWidth/2; filter_r <= filterWidth/2; ++filter_r) {
+    for (int filter_c = -filterWidth/2; filter_c <= filterWidth/2; ++filter_c) {
+      //Find the global image position for this filter position
+      //clamp to boundary of the image
+      int image_r = r1 + filter_r;
+      int image_c = c1 + filter_c;
+
+      float image_value = (float)inputChannelShared[image_r * numCols1 + image_c];
+      float filter_value = filter0[(filter_r + filterWidth/2) * filterWidth + filter_c + filterWidth/2];
+
+      result += image_value * filter_value;
+    }
+  }
+  outputChannel[r * numCols + c] = (char)result;
+  */
+
 
 }
 
@@ -207,21 +271,24 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
 
   // Again, call cudaDeviceSynchronize(), then call checkCudaErrors() immediately after
   // launching your kernel to make sure that you didn't make any mistakes.
-  gaussian_blur<<<gridSize, blockSize>>>(d_red,
+  int sharedMemSize = sizeof(float) * filterWidth * filterWidth;
+  /*
+  int numRows1 = blockDimY + filterWidth - 1, numCols1 = blockDimX + filterWidth - 1;
+  int sharedMemSize = numRows1 * numCols1;
+  */
+  gaussian_blur<<<gridSize, blockSize, sharedMemSize>>>(d_red,
                                          d_redBlurred,
                                          numRows, numCols,
                                          d_filter, filterWidth);
-  gaussian_blur<<<gridSize, blockSize>>>(d_green,
+  gaussian_blur<<<gridSize, blockSize, sharedMemSize>>>(d_green,
                                          d_greenBlurred,
                                          numRows, numCols,
                                          d_filter, filterWidth);
-  gaussian_blur<<<gridSize, blockSize>>>(d_blue,
+  gaussian_blur<<<gridSize, blockSize, sharedMemSize>>>(d_blue,
                                          d_blueBlurred,
                                          numRows, numCols,
                                          d_filter, filterWidth);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-  int pick = 173400;
-  //printf("%d\t%d,\t%d\t%d,\t%d\t%d\n", d_red[pick], d_redBlurred[pick], d_green[pick], d_greenBlurred[pick], d_blue[pick], d_blueBlurred[pick]);
 
   // Now we recombine your results. We take care of launching this kernel for you.
   //
