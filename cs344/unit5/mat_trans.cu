@@ -1,9 +1,11 @@
 // transpose_parallel_per_element_tiled 8x8: 0.229056 ms.
 // transpose_parallel_per_element_tiled 16x16: 0.130112 ms.
 // transpose_parallel_per_element_tiled 32x32: 0.34448 ms.
+// transpose_parallel_per_element_tiled 64x64: 0.002112 ms. ??????????????????
 // transpose_parallel_per_element 8x8: 0.227008 ms.
 // transpose_parallel_per_element 16x16: 0.172192 ms.
 // transpose_parallel_per_element 32x32: 0.344384 ms.
+// transpose_parallel_per_element 64x64: 0.001984 ms. ??????????????
 #include <stdio.h>
 #include "gputimer.h"
 #include "utils.h"
