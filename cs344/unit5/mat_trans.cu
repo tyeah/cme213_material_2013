@@ -19,17 +19,16 @@ __global__ void
 transpose_parallel_per_element_tiled(float in[], float out[])
 {
 	// TODO
-	int i = blockIdx.y * blockDim.y + threadIdx.y;
-	int j = blockIdx.x * blockDim.x + threadIdx.x;
-	int idx = i * N + j;
-	extern __shared__ float in_sh[];
-	in_sh[threadIdx.x * blockDim.x + threadIdx.y] = in[idx];
+  int in_corner_i = blockIdx.y * blockDim.y, in_corner_j = blockIdx.x * blockDim.x;
+  int out_corner_i = in_corner_j, out_corner_j = in_corner_i;
+  int in_i = threadIdx.y, in_j = threadIdx.x;
+
+	__shared__ float tile[K][K];
+	tile[in_j][in_i] = in[(in_corner_i + in_i) * N + (in_corner_j + in_j)];
 	__syncthreads();
 	
 	// out[j * N + i] = in[i * N + j]
-	int i1 = blockIdx.x * blockDim.x + threadIdx.y;
-	int j1 = blockIdx.y * blockDim.y + threadIdx.x;
-	out[i1 * N + j1] = in_sh[threadIdx.y * blockDim.x + threadIdx.x];
+	out[(out_corner_i + in_i) * N + (out_corner_j + in_j)] = tile[in_i][in_j];
 }
 
 // The following functions and kernels are for your references
@@ -103,8 +102,8 @@ int main(int argc, char **argv)
 	dim3 threads(K,K);	//TODO, you need to set the proper threads per block
 
 	timer.Start();
-	//transpose_parallel_per_element_tiled<<<blocks, threads, K * K * sizeof(float)>>>(d_in, d_out);
-	transpose_parallel_per_element<<<blocks, threads>>>(d_in, d_out);
+	transpose_parallel_per_element_tiled<<<blocks, threads>>>(d_in, d_out);
+	//transpose_parallel_per_element<<<blocks, threads>>>(d_in, d_out);
 	timer.Stop();
 	cudaMemcpy(out, d_out, numbytes, cudaMemcpyDeviceToHost);
 	printf("transpose_parallel_per_element_tiled %dx%d: %g ms.\nVerifying ...%s\n", 
